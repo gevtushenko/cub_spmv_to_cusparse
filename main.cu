@@ -320,8 +320,6 @@ void print(thrust::host_vector<T> values,
 
 int main()
 {
-  cudaFree(nullptr);
-
   thrust::device_vector<float> values;
   thrust::device_vector<int> row_offsets;
   thrust::device_vector<int> column_indices;
@@ -339,9 +337,21 @@ int main()
     {
       gen_banded(num_rows, band_width, percent_of_full_rows, values, row_offsets, column_indices, vector_x, vector_y);
       const float cub = cub_spmv(values, row_offsets, column_indices, vector_x, vector_y);
+      thrust::device_vector<float> cub_vector_y = vector_y;
       const float cusparse = cusparse_spmv(values, row_offsets, column_indices, vector_x, vector_y);
+      thrust::device_vector<float> cusparse_vector_y = vector_y;
+
       const float speedup = cub / cusparse;
-      std::cout << num_rows << ", " << speedup << std::endl;
+      std::cout << num_rows << ", " << speedup;
+      if (cub_vector_y == cusparse_vector_y)
+      {
+        std::cout << ", " << "ok";
+      }
+      else
+      {
+        std::cout << ", " << "fail";
+      }
+      std::cout << std::endl;
     } 
     catch(...)
     {
