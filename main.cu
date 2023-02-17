@@ -35,6 +35,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <stdexcept>
 
 #include <cusparse.h>
 
@@ -194,34 +195,63 @@ float cusparse_spmv(const thrust::device_vector<float> &values,
 template <class T>
 void gen_banded(int num_rows,
                 int band_width,
+                int percent_of_full_rows,
                 thrust::device_vector<T> &values,
                 thrust::device_vector<int> &row_offsets,
                 thrust::device_vector<int> &column_indices,
                 thrust::device_vector<T> &vector_x,
                 thrust::device_vector<T> &vector_y)
 {
-  row_offsets.resize(num_rows + 1);
-  thrust::fill(row_offsets.begin(), row_offsets.end(), band_width);
-  thrust::exclusive_scan(row_offsets.begin(), row_offsets.end(), row_offsets.begin());
-  const int num_nonzeros = band_width * num_rows;
+  const int max_full_rows = (num_rows / 100) * percent_of_full_rows;
+  std::size_t estimated_matrix_elements = static_cast<std::size_t>(band_width) * num_rows
+                                        + static_cast<std::size_t>(max_full_rows) * num_rows;
+
+  if (estimated_matrix_elements > std::numeric_limits<int>::max()) 
+  {
+    throw std::runtime_error("CUB doesn't support large matrices");
+  }
+
+  thrust::host_vector<int> offsets(num_rows + 1, band_width);
+  int full_rows = 0;
+  for (int row = 0; row < num_rows; row++)
+  {
+    if (rand() > (RAND_MAX / 2))
+    {
+      offsets[row] = num_rows;
+      full_rows++;
+
+      if (full_rows > max_full_rows)
+      {
+        break;
+      }
+    }
+  }
+  thrust::exclusive_scan(offsets.begin(), offsets.end(), offsets.begin());
+  const int num_nonzeros = offsets[num_rows];
 
   int offset = 0;
   thrust::host_vector<T> columns(num_nonzeros);
-  for (int row = 0; row < num_rows - band_width; row++) 
+  for (int row = 0; row < num_rows; row++) 
   {
-    for (int j = 0; j < band_width; j++) 
+    const int row_size = offsets[row + 1] - offsets[row];
+
+    if (row + row_size > num_rows) 
     {
-      columns[offset++] = row + j;
+      for (int j = 0; j < row_size; j++) 
+      {
+        columns[offset++] = j;
+      }
     }
-  }
-  for (int row = num_rows - band_width; row < num_rows; row++) 
-  {
-    for (int j = 0; j < band_width; j++) 
+    else
     {
-      columns[offset++] = j;
+      for (int j = 0; j < row_size; j++) 
+      {
+        columns[offset++] = row + j;
+      }
     }
   }
   column_indices = columns;
+  row_offsets = offsets;
 
   values.resize(num_nonzeros, 1.0f);
   vector_x.resize(num_rows, 1.0f);
@@ -302,12 +332,20 @@ int main()
   // print<float>(values, row_offsets, column_indices, vector_x, vector_y);
 
   const int band_width = 7;
+  const int percent_of_full_rows = 5;
   for (int num_rows = 1 << 14; num_rows < 1 << 26; num_rows *= 2) 
   {
-    gen_banded(num_rows, 7, values, row_offsets, column_indices, vector_x, vector_y);
-    const float cub = cub_spmv(values, row_offsets, column_indices, vector_x, vector_y);
-    const float cusparse = cusparse_spmv(values, row_offsets, column_indices, vector_x, vector_y);
-    const float speedup = cub / cusparse;
-    std::cout << num_rows << ", " << speedup << "\n";
+    try 
+    {
+      gen_banded(num_rows, band_width, percent_of_full_rows, values, row_offsets, column_indices, vector_x, vector_y);
+      const float cub = cub_spmv(values, row_offsets, column_indices, vector_x, vector_y);
+      const float cusparse = cusparse_spmv(values, row_offsets, column_indices, vector_x, vector_y);
+      const float speedup = cub / cusparse;
+      std::cout << num_rows << ", " << speedup << std::endl;
+    } 
+    catch(...)
+    {
+      break;
+    }
   }
 }
