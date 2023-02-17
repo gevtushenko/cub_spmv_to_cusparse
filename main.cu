@@ -30,9 +30,11 @@
 #include <thrust/device_vector.h>
 #include <thrust/host_vector.h>
 #include <thrust/sequence.h>
+#include <thrust/scan.h>
 
 #include <iomanip>
 #include <iostream>
+#include <limits>
 
 #include <cusparse.h>
 
@@ -190,6 +192,43 @@ float cusparse_spmv(const thrust::device_vector<float> &values,
 }
 
 template <class T>
+void gen_banded(int num_rows,
+                int band_width,
+                thrust::device_vector<T> &values,
+                thrust::device_vector<int> &row_offsets,
+                thrust::device_vector<int> &column_indices,
+                thrust::device_vector<T> &vector_x,
+                thrust::device_vector<T> &vector_y)
+{
+  row_offsets.resize(num_rows + 1);
+  thrust::fill(row_offsets.begin(), row_offsets.end(), band_width);
+  thrust::exclusive_scan(row_offsets.begin(), row_offsets.end(), row_offsets.begin());
+  const int num_nonzeros = band_width * num_rows;
+
+  int offset = 0;
+  thrust::host_vector<T> columns(num_nonzeros);
+  for (int row = 0; row < num_rows - band_width; row++) 
+  {
+    for (int j = 0; j < band_width; j++) 
+    {
+      columns[offset++] = row + j;
+    }
+  }
+  for (int row = num_rows - band_width; row < num_rows; row++) 
+  {
+    for (int j = 0; j < band_width; j++) 
+    {
+      columns[offset++] = j;
+    }
+  }
+  column_indices = columns;
+
+  values.resize(num_nonzeros, 1.0f);
+  vector_x.resize(num_rows, 1.0f);
+  vector_y.resize(num_rows, 0.0f);
+}
+
+template <class T>
 void gen_identity(int num_rows,
                   thrust::device_vector<T> &values,
                   thrust::device_vector<int> &row_offsets,
@@ -228,7 +267,7 @@ void print(thrust::host_vector<T> values,
 
       while (last_column < column)
       {
-        std::cout << " x.x ";
+        std::cout << "     ";
         last_column++;
       }
 
@@ -238,7 +277,7 @@ void print(thrust::host_vector<T> values,
 
     while (last_column < num_cols)
     {
-      std::cout << " x.x ";
+      std::cout << "     ";
       last_column++;
     }
 
@@ -253,22 +292,22 @@ int main()
 {
   cudaFree(nullptr);
 
-  const int num_rows = 7;
-
   thrust::device_vector<float> values;
   thrust::device_vector<int> row_offsets;
   thrust::device_vector<int> column_indices;
   thrust::device_vector<float> vector_x;
   thrust::device_vector<float> vector_y;
 
-  for (int num_rows = 1 << 14; num_rows < 1 << 30; num_rows *= 2) 
+  // gen_banded(20, 3, values, row_offsets, column_indices, vector_x, vector_y);
+  // print<float>(values, row_offsets, column_indices, vector_x, vector_y);
+
+  const int band_width = 7;
+  for (int num_rows = 1 << 14; num_rows < 1 << 26; num_rows *= 2) 
   {
-    gen_identity(num_rows, values, row_offsets, column_indices, vector_x, vector_y);
+    gen_banded(num_rows, 7, values, row_offsets, column_indices, vector_x, vector_y);
     const float cub = cub_spmv(values, row_offsets, column_indices, vector_x, vector_y);
     const float cusparse = cusparse_spmv(values, row_offsets, column_indices, vector_x, vector_y);
     const float speedup = cub / cusparse;
     std::cout << num_rows << ", " << speedup << "\n";
   }
-
-  // print<float>(values, row_offsets, column_indices, vector_x, vector_y);
 }
