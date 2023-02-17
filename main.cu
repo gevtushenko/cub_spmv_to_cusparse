@@ -230,7 +230,7 @@ void gen_banded(int num_rows,
   const int num_nonzeros = offsets[num_rows];
 
   int offset = 0;
-  thrust::host_vector<T> columns(num_nonzeros);
+  thrust::host_vector<int> columns(num_nonzeros);
   for (int row = 0; row < num_rows; row++) 
   {
     const int row_size = offsets[row + 1] - offsets[row];
@@ -318,7 +318,7 @@ void print(thrust::host_vector<T> values,
   }
 }
 
-int main()
+void bench_float()
 {
   thrust::device_vector<float> values;
   thrust::device_vector<int> row_offsets;
@@ -331,11 +331,14 @@ int main()
 
   const int band_width = 7;
   const int percent_of_full_rows = 5;
+
   for (int num_rows = 1 << 14; num_rows < 1 << 26; num_rows *= 2) 
   {
     try 
     {
+      // gen_banded(num_rows, band_width, percent_of_full_rows, values, row_offsets, column_indices, vector_x, vector_y);
       gen_banded(num_rows, band_width, percent_of_full_rows, values, row_offsets, column_indices, vector_x, vector_y);
+
       const float cub = cub_spmv(values, row_offsets, column_indices, vector_x, vector_y);
       thrust::device_vector<float> cub_vector_y = vector_y;
       const float cusparse = cusparse_spmv(values, row_offsets, column_indices, vector_x, vector_y);
@@ -358,4 +361,87 @@ int main()
       break;
     }
   }
+}
+
+struct custom_t 
+{
+  float val;
+
+  __host__ __device__ custom_t() {}
+  __host__ __device__ custom_t(float v) : val(v) {}
+
+  __host__ __device__ custom_t& operator*=(custom_t other) {
+    val *= other.val;
+    return *this;
+  }
+
+  __host__ __device__ custom_t& operator+=(custom_t other) {
+    val += other.val;
+    return *this;
+  }
+};
+
+__host__ __device__ custom_t operator*(custom_t lhs , custom_t rhs) {
+  return {lhs.val * 2 * rhs.val};
+}
+
+__host__ __device__ custom_t operator+(custom_t lhs , custom_t rhs) {
+  return {lhs.val * 2 + rhs.val};
+}
+
+__host__ __device__ bool operator==(custom_t lhs , custom_t rhs) {
+  return lhs.val == rhs.val;
+}
+
+void bench_custom()
+{
+  thrust::device_vector<custom_t> values;
+  thrust::device_vector<int> row_offsets;
+  thrust::device_vector<int> column_indices;
+  thrust::device_vector<custom_t> vector_x;
+  thrust::device_vector<custom_t> vector_y;
+
+  // gen_banded(20, 3, values, row_offsets, column_indices, vector_x, vector_y);
+  // print<float>(values, row_offsets, column_indices, vector_x, vector_y);
+
+  const int band_width = 7;
+  const int percent_of_full_rows = 5;
+
+  for (int num_rows = 1 << 14; num_rows < 1 << 26; num_rows *= 2) 
+  {
+    try 
+    {
+      // gen_banded(num_rows, band_width, percent_of_full_rows, values, row_offsets, column_indices, vector_x, vector_y);
+      gen_banded(num_rows, band_width, percent_of_full_rows, values, row_offsets, column_indices, vector_x, vector_y);
+
+      const float cub = cub_spmv(values, row_offsets, column_indices, vector_x, vector_y);
+      thrust::device_vector<custom_t> cub_vector_y = vector_y;
+      const float cusparse = 10000000000.0f;
+      thrust::device_vector<custom_t> cusparse_vector_y;
+      // const float cusparse = cusparse_spmv(values, row_offsets, column_indices, vector_x, vector_y);
+      // thrust::device_vector<float> cusparse_vector_y = vector_y;
+
+      const float speedup = cub / cusparse;
+      std::cout << num_rows << ", " << speedup;
+      if (cub_vector_y == cusparse_vector_y)
+      {
+        std::cout << ", " << "ok";
+      }
+      else
+      {
+        std::cout << ", " << "fail";
+      }
+      std::cout << std::endl;
+    } 
+    catch(...)
+    {
+      break;
+    }
+  }
+}
+
+int main()
+{
+  // bench_float();
+  bench_custom();
 }
