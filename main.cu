@@ -27,8 +27,6 @@
 
 #include <cub/device/device_spmv.cuh>
 
-#include <jitify.hpp>
-
 #include <thrust/device_vector.h>
 #include <thrust/host_vector.h>
 #include <thrust/sequence.h>
@@ -40,6 +38,7 @@
 #include <stdexcept>
 
 #include <cusparse.h>
+#include <nvrtc.h>
 
 // - matrix is limited by 2^31 elements
 // - untested
@@ -395,31 +394,6 @@ __host__ __device__ bool operator==(custom_t lhs , custom_t rhs) {
   return lhs.val == rhs.val;
 }
 
-float cusparse_spmv_custom()
-{
-  const char* program_source = "my_program\n"
-      "template<int N, typename T>\n"
-      "__global__\n"
-      "void my_kernel(T data) {\n"
-      "    printf(\"%d\\n\", data);\n"
-      "}\n";
-  static jitify::JitCache kernel_cache;
-  jitify::Program program = kernel_cache.program(program_source);
-
-  int data = 42;
-
-  dim3 grid(1);
-  dim3 block(1);
-  using jitify::reflection::type_of;
-  program.kernel("my_kernel")
-        .instantiate(3, type_of(data))
-        .configure(grid, block)
-        .launch(data);
-  cudaDeviceSynchronize();
-
-  return 42;
-}
-
 void bench_custom()
 {
   thrust::device_vector<custom_t> values;
@@ -469,7 +443,5 @@ void bench_custom()
 
 int main()
 {
-  // bench_float();
-  // bench_custom();
-  cusparse_spmv_custom();
+  bench_float();
 }
