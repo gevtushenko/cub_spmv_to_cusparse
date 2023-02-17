@@ -1,0 +1,274 @@
+/******************************************************************************
+ * Copyright (c) 2023, NVIDIA CORPORATION.  All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *     * Redistributions of source code must retain the above copyright
+ *       notice, this list of conditions and the following disclaimer.
+ *     * Redistributions in binary form must reproduce the above copyright
+ *       notice, this list of conditions and the following disclaimer in the
+ *       documentation and/or other materials provided with the distribution.
+ *     * Neither the name of the NVIDIA CORPORATION nor the
+ *       names of its contributors may be used to endorse or promote products
+ *       derived from this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL NVIDIA CORPORATION BE LIABLE FOR ANY
+ * DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
+ ******************************************************************************/
+
+#include <cub/device/device_spmv.cuh>
+
+#include <thrust/device_vector.h>
+#include <thrust/host_vector.h>
+#include <thrust/sequence.h>
+
+#include <iomanip>
+#include <iostream>
+
+#include <cusparse.h>
+
+// - matrix is limited by 2^31 elements
+// - untested
+template <class T>
+float cub_spmv(const thrust::device_vector<T> &values,
+               const thrust::device_vector<int> &row_offsets,
+               const thrust::device_vector<int> &column_indices,
+               const thrust::device_vector<T> &vector_x,
+               thrust::device_vector<T> &vector_y)
+{
+  std::uint8_t *d_temp_storage{};
+  std::size_t temp_storage_size{};
+
+  const T *d_values           = thrust::raw_pointer_cast(values.data());
+  const int *d_row_offsets    = thrust::raw_pointer_cast(row_offsets.data());
+  const int *d_column_indices = thrust::raw_pointer_cast(column_indices.data());
+
+  const T *d_vector_x = thrust::raw_pointer_cast(vector_x.data());
+  T *d_vector_y       = thrust::raw_pointer_cast(vector_y.data());
+
+  const auto num_rows     = static_cast<int>(row_offsets.size() - 1);
+  const auto num_columns  = num_rows;
+  const auto num_nonzeros = static_cast<int>(values.size());
+
+  cub::DeviceSpmv::CsrMV(d_temp_storage,
+                         temp_storage_size,
+                         d_values,
+                         d_row_offsets,
+                         d_column_indices,
+                         d_vector_x,
+                         d_vector_y,
+                         num_rows,
+                         num_columns,
+                         num_nonzeros);
+
+  thrust::device_vector<std::uint8_t> temp_storage(temp_storage_size);
+  d_temp_storage = thrust::raw_pointer_cast(temp_storage.data());
+
+  cudaEvent_t begin, end;
+  cudaEventCreate(&begin);
+  cudaEventCreate(&end);
+
+  cudaEventRecord(begin);
+  cub::DeviceSpmv::CsrMV(d_temp_storage,
+                         temp_storage_size,
+                         d_values,
+                         d_row_offsets,
+                         d_column_indices,
+                         d_vector_x,
+                         d_vector_y,
+                         num_rows,
+                         num_columns,
+                         num_nonzeros);
+  cudaEventRecord(end);
+  cudaEventSynchronize(end);
+
+  float ms{};
+  cudaEventElapsedTime(&ms, begin, end);
+
+  cudaEventDestroy(end);
+  cudaEventDestroy(begin);
+
+  return ms;
+}
+
+float cusparse_spmv(const thrust::device_vector<float> &values,
+                    const thrust::device_vector<int> &row_offsets,
+                    const thrust::device_vector<int> &column_indices,
+                    const thrust::device_vector<float> &vector_x,
+                    thrust::device_vector<float> &vector_y)
+{
+  std::uint8_t *d_temp_storage{};
+  std::size_t temp_storage_size{};
+
+  float alpha = 1.0f;
+  float beta  = 0.0f;
+
+  const float *d_values           = thrust::raw_pointer_cast(values.data());
+  const int *d_row_offsets    = thrust::raw_pointer_cast(row_offsets.data());
+  const int *d_column_indices = thrust::raw_pointer_cast(column_indices.data());
+
+  const float *d_vector_x = thrust::raw_pointer_cast(vector_x.data());
+  float *d_vector_y       = thrust::raw_pointer_cast(vector_y.data());
+
+  const auto num_rows     = static_cast<int>(row_offsets.size() - 1);
+  const auto num_cols     = num_rows;
+  const auto num_nonzeros = static_cast<int>(values.size());
+
+  cusparseHandle_t handle = nullptr;
+  cusparseSpMatDescr_t matA;
+  cusparseDnVecDescr_t vecX, vecY;
+
+  cusparseCreate(&handle);
+  cusparseCreateCsr(&matA,
+                    num_rows,
+                    num_cols,
+                    num_nonzeros,
+                    (void*)d_row_offsets,
+                    (void*)d_column_indices,
+                    (void*)d_values,
+                    CUSPARSE_INDEX_32I,
+                    CUSPARSE_INDEX_32I,
+                    CUSPARSE_INDEX_BASE_ZERO,
+                    CUDA_R_32F);
+
+  cusparseCreateDnVec(&vecX, num_cols, (void*)d_vector_x, CUDA_R_32F);
+  cusparseCreateDnVec(&vecY, num_rows, (void*)d_vector_y, CUDA_R_32F);
+
+  cusparseSpMV_bufferSize(handle,
+                          CUSPARSE_OPERATION_NON_TRANSPOSE,
+                          &alpha,
+                          matA,
+                          vecX,
+                          &beta,
+                          vecY,
+                          CUDA_R_32F,
+                          CUSPARSE_SPMV_ALG_DEFAULT,
+                          &temp_storage_size);
+
+  thrust::device_vector<std::uint8_t> temp_storage(temp_storage_size);
+  d_temp_storage = thrust::raw_pointer_cast(temp_storage.data());
+
+  cudaEvent_t begin, end;
+  cudaEventCreate(&begin);
+  cudaEventCreate(&end);
+
+  cudaEventRecord(begin);
+  cusparseSpMV(handle,
+               CUSPARSE_OPERATION_NON_TRANSPOSE,
+               &alpha,
+               matA,  
+               vecX,
+               &beta,
+               vecY,
+               CUDA_R_32F,
+               CUSPARSE_SPMV_ALG_DEFAULT,
+               d_temp_storage);
+  cudaEventRecord(end);
+  cudaEventSynchronize(end);
+
+  float ms{};
+  cudaEventElapsedTime(&ms, begin, end);
+
+  cudaEventDestroy(end);
+  cudaEventDestroy(begin);
+
+  cusparseDestroySpMat(matA);
+  cusparseDestroyDnVec(vecX);
+  cusparseDestroyDnVec(vecY);
+  cusparseDestroy(handle);
+
+  return ms;
+}
+
+template <class T>
+void gen_identity(int num_rows,
+                  thrust::device_vector<T> &values,
+                  thrust::device_vector<int> &row_offsets,
+                  thrust::device_vector<int> &column_indices,
+                  thrust::device_vector<T> &vector_x,
+                  thrust::device_vector<T> &vector_y)
+{
+  row_offsets.resize(num_rows + 1);
+  thrust::sequence(row_offsets.begin(), row_offsets.end());
+
+  column_indices.resize(num_rows);
+  thrust::sequence(column_indices.begin(), column_indices.end());
+
+  values.resize(num_rows, 1.0f);
+  vector_x.resize(num_rows, 1.0f);
+  vector_y.resize(num_rows, 0.0f);
+}
+
+template <class T>
+void print(thrust::host_vector<T> values,
+           thrust::host_vector<int> row_offsets,
+           thrust::host_vector<int> column_indices,
+           thrust::host_vector<T> vector_x,
+           thrust::host_vector<T> vector_y)
+{
+  const auto num_rows = static_cast<int>(row_offsets.size() - 1);
+  const auto num_cols = num_rows;
+
+  for (int row = 0; row < num_rows; row++)
+  {
+    int last_column = 0;
+    for (int element = row_offsets[row]; element < row_offsets[row + 1]; element++)
+    {
+      const int column = column_indices[element];
+      const T value    = values[element];
+
+      while (last_column < column)
+      {
+        std::cout << " x.x ";
+        last_column++;
+      }
+
+      std::cout << " " << std::fixed << std::setprecision(1) << value << " ";
+      last_column++;
+    }
+
+    while (last_column < num_cols)
+    {
+      std::cout << " x.x ";
+      last_column++;
+    }
+
+    std::cout << "   " << std::fixed << std::setprecision(1) << vector_x[row] << "    "
+              << std::fixed << std::setprecision(1) << vector_y[row];
+
+    std::cout << std::endl;
+  }
+}
+
+int main()
+{
+  cudaFree(nullptr);
+
+  const int num_rows = 7;
+
+  thrust::device_vector<float> values;
+  thrust::device_vector<int> row_offsets;
+  thrust::device_vector<int> column_indices;
+  thrust::device_vector<float> vector_x;
+  thrust::device_vector<float> vector_y;
+
+  for (int num_rows = 2 << 14; num_rows < 2 << 28; num_rows *= 2) 
+  {
+    gen_identity(num_rows, values, row_offsets, column_indices, vector_x, vector_y);
+    const float cub = cub_spmv(values, row_offsets, column_indices, vector_x, vector_y);
+    const float cusparse = cusparse_spmv(values, row_offsets, column_indices, vector_x, vector_y);
+    const float speedup = cub / cusparse;
+    std::cout << num_rows << ", " << speedup << "\n";
+  }
+
+  // print<float>(values, row_offsets, column_indices, vector_x, vector_y);
+}

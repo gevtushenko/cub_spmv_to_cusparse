@@ -1,11 +1,9 @@
 cmake_minimum_required(VERSION 3.0.0)
-project(CubSpMV2CUSPARSE VERSION 0.1.0)
+project(CubSpMV2CUSPARSE LANGUAGES CUDA)
 
-include(CTest)
-enable_testing()
-
-add_executable(CubSpMV2CUSPARSE main.cpp)
+set(CMAKE_CUDA_ARCHITECTURES "86")
+add_executable(CubSpMV2CUSPARSE main.cu)
+target_link_libraries(CubSpMV2CUSPARSE PRIVATE cusparse)
 
 set(CPACK_PROJECT_NAME ${PROJECT_NAME})
-set(CPACK_PROJECT_VERSION ${PROJECT_VERSION})
 include(CPack)
