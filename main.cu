@@ -261,7 +261,7 @@ int main()
   thrust::device_vector<float> vector_x;
   thrust::device_vector<float> vector_y;
 
-  for (int num_rows = 2 << 14; num_rows < 2 << 28; num_rows *= 2) 
+  for (int num_rows = 1 << 14; num_rows < 1 << 30; num_rows *= 2) 
   {
     gen_identity(num_rows, values, row_offsets, column_indices, vector_x, vector_y);
     const float cub = cub_spmv(values, row_offsets, column_indices, vector_x, vector_y);
