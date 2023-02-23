@@ -155,7 +155,7 @@ float cusparse_spmv(const thrust::device_vector<float> &values,
                           &beta,
                           vecY,
                           CUDA_R_32F,
-                          CUSPARSE_SPMV_ALG_DEFAULT,
+                          CUSPARSE_SPMV_CSR_ALG1,
                           &temp_storage_size);
 
   thrust::device_vector<std::uint8_t> temp_storage(temp_storage_size);
@@ -174,7 +174,7 @@ float cusparse_spmv(const thrust::device_vector<float> &values,
                &beta,
                vecY,
                CUDA_R_32F,
-               CUSPARSE_SPMV_ALG_DEFAULT,
+               CUSPARSE_SPMV_CSR_ALG1,
                d_temp_storage);
   cudaEventRecord(end);
   cudaEventSynchronize(end);
@@ -406,13 +406,12 @@ void bench_custom()
   // print<float>(values, row_offsets, column_indices, vector_x, vector_y);
 
   const int band_width = 7;
-  const int percent_of_full_rows = 5;
+  const int percent_of_full_rows = 0;
 
   for (int num_rows = 1 << 14; num_rows < 1 << 26; num_rows *= 2) 
   {
     try 
     {
-      // gen_banded(num_rows, band_width, percent_of_full_rows, values, row_offsets, column_indices, vector_x, vector_y);
       gen_banded(num_rows, band_width, percent_of_full_rows, values, row_offsets, column_indices, vector_x, vector_y);
 
       const float cub = cub_spmv(values, row_offsets, column_indices, vector_x, vector_y);
